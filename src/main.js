@@ -34,8 +34,8 @@ function calculateScores(answers, questions) {
     scores[d].facet[f].score += score;
     scores[d].facet[f].count += 1;
   });
-  for (const d of Object.values(scores)) {
-    d.result = classify(d.score, d.count);
+  for (const [key, d] of Object.entries(scores)) {
+    d.result = normClassify(d.score, key);
     for (const f of Object.values(d.facet)) f.result = classify(f.score, f.count);
   }
   return scores;
@@ -44,6 +44,52 @@ function calculateScores(answers, questions) {
 function classify(score, count) {
   const avg = score / count;
   return avg > 3 ? 'high' : avg < 3 ? 'low' : 'neutral';
+}
+
+// Norm-based classification for domains using population z-scores.
+// Facets still use the midpoint classify() since facet norms are unavailable.
+function normClassify(score, domain) {
+  const norm = NORMS[domain];
+  if (!norm) return classify(score, 24);
+  const z = (score - norm.mean) / norm.sd;
+  return z > 1 ? 'high' : z < -1 ? 'low' : 'neutral';
+}
+
+// ---------------------------------------------------------------------------
+// Normative data & percentile calculation
+// ---------------------------------------------------------------------------
+// Approximate population norms for IPIP-NEO-PI-R 120-item version
+// (24 items per domain, score range 24–120)
+const NORMS = {
+  O: { mean: 73.6, sd: 12.3 },
+  C: { mean: 69.7, sd: 13.2 },
+  E: { mean: 68.8, sd: 13.6 },
+  A: { mean: 76.6, sd: 11.5 },
+  N: { mean: 60.4, sd: 14.1 }
+};
+
+function normalCdf(z) {
+  if (z < -6) return 0;
+  if (z > 6) return 1;
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const sign = z < 0 ? -1 : 1;
+  const x = Math.abs(z) / Math.SQRT2;
+  const t = 1 / (1 + p * x);
+  const erf = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  return 0.5 * (1 + sign * erf);
+}
+
+function scorePercentile(score, domain) {
+  const { mean, sd } = NORMS[domain];
+  const z = (score - mean) / sd;
+  return Math.max(1, Math.min(99, Math.round(normalCdf(z) * 100)));
+}
+
+function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +296,7 @@ function facetScoresToScores(facetScores) {
       };
       scores[domain].score += fs;
     }
-    scores[domain].result = classify(scores[domain].score, domainCount);
+    scores[domain].result = normClassify(scores[domain].score, domain);
   }
   return scores;
 }
@@ -441,18 +487,22 @@ function renderHome() {
 
   const features = h('div', { className: 'features' },
     h('div', { className: 'feature' },
+      h('div', { className: 'feature-icon' }, '✈️'),
       h('h3', {}, 'Offline'),
-      h('p', {}, 'Your browser saves the entire app on first visit. Come back anytime — even on a plane — and it still works.')
+      h('p', {}, 'Your browser saves the entire app on first visit. Come back anytime, even on a plane, and it still works.')
     ),
     h('div', { className: 'feature' },
+      h('div', { className: 'feature-icon' }, '🔒'),
       h('h3', {}, 'Private'),
       h('p', {}, 'No cookies, no tracking, no data sent anywhere. Your answers stay on your device and nowhere else. ', h('a', { href: '#/privacy' }, 'See how we prove it.'))
     ),
     h('div', { className: 'feature' },
+      h('div', { className: 'feature-icon' }, '🔬'),
       h('h3', {}, 'Scientific'),
       h('p', {}, '120-item IPIP-NEO-PI-R inventory measuring 5 domains and 30 facets.')
     ),
     h('div', { className: 'feature' },
+      h('div', { className: 'feature-icon' }, '🌍'),
       h('h3', {}, '42 Languages'),
       h('p', {}, 'Community translations included. Select your language from the header.')
     )
@@ -520,7 +570,8 @@ function renderTest() {
 
   const progress = h('div', { className: 'progress-wrap' },
     h('div', { className: 'progress-bar', role: 'progressbar', 'aria-valuenow': String(answered), 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-label': `${answered} of ${total} questions answered` },
-      h('div', { className: 'progress-fill', style: { width: `${(answered / total) * 100}%` } })
+      h('div', { className: 'progress-fill', style: { width: `${(answered / total) * 100}%` } }),
+      h('div', { className: 'progress-pos', style: { left: `${((idx + 0.5) / total) * 100}%` } })
     ),
     h('div', { className: 'progress-text' },
       h('span', {}, `Question ${idx + 1} of ${total}`),
@@ -603,6 +654,8 @@ function renderTest() {
       pb.setAttribute('aria-valuenow', String(answeredCount));
       pb.setAttribute('aria-label', `${answeredCount} of ${total} questions answered`);
     }
+    const pos = document.querySelector('.progress-pos');
+    if (pos) pos.style.left = `${((questionIdx + 0.5) / total) * 100}%`;
   }
 
   // Transition to a new question with animation (no full re-render)
@@ -742,6 +795,30 @@ function renderResults() {
   // Sort by OCEAN order
   results.sort((a, b) => DOMAIN_ORDER.indexOf(a.domain) - DOMAIN_ORDER.indexOf(b.domain));
 
+  // Enrich each domain with pre-computed display data so the PNG export
+  // renders the exact same numbers as the web page — no recalculation.
+  results.forEach(domain => {
+    const percentile = scorePercentile(domain.score, domain.domain);
+    const norm = NORMS[domain.domain];
+    const z = (domain.score - norm.mean) / norm.sd;
+    domain.percentile = percentile;
+    domain.ordinalStr = ordinal(percentile);
+    domain.normLevel = z < -1 ? 'low' : z > 1 ? 'high' : 'average';
+    domain.normLower = Math.round(norm.mean - norm.sd);
+    domain.normUpper = Math.round(norm.mean + norm.sd);
+    domain.normText = `Your score of ${domain.score} is ${domain.normLevel} (${domain.ordinalStr} percentile). Most people score between ${domain.normLower} and ${domain.normUpper}.`;
+    // Plain-text version of domain description for PNG (strip HTML tags)
+    domain.plainText = domain.text.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    // Enrich facets too
+    domain.facets.forEach(facet => {
+      facet.fMax = facet.count * 5;
+      facet.fPct = (facet.score / facet.fMax) * 100;
+      if (facet.text) {
+        facet.plainText = facet.text.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+      }
+    });
+  });
+
   // Pull disclaimer and opening from override data, falling back to English
   const overrideData = resultOverrides[lang] || resultOverrides['en'];
   const opening = overrideData.opening || resultOverrides['en'].opening;
@@ -752,17 +829,19 @@ function renderResults() {
 
   const header = h('div', { className: 'results-header' },
     h('h2', {}, opening),
-    h('p', {}, 'Click any trait to expand details and facet scores.'),
-    disclaimerEl
+    disclaimerEl,
+    h('p', { className: 'results-cta' }, 'Click any trait to expand details and facet scores.')
   );
 
   const cards = h('div', {});
   results.forEach(domain => {
-    const maxScore = domain.count * 5;
-    const pct = (domain.score / maxScore) * 100;
+    const { percentile } = domain;
     const color = `var(--c-${domain.domain})`;
 
     const body = h('div', { className: 'domain-body' });
+
+    // Normative context
+    body.appendChild(h('div', { className: 'domain-norm' }, domain.normText));
 
     // Description
     body.appendChild(h('div', { className: 'domain-desc' }));
@@ -770,15 +849,13 @@ function renderResults() {
 
     // Facets
     domain.facets.forEach(facet => {
-      const fMax = facet.count * 5;
-      const fPct = (facet.score / fMax) * 100;
       const facetEl = h('div', { className: 'facet' },
         h('div', { className: 'facet-header' },
           h('span', { className: 'facet-title' }, facet.title),
-          h('span', { className: 'facet-score' }, `${facet.score}/${fMax}`)
+          h('span', { className: 'facet-score' }, `${facet.score}/${facet.fMax}`)
         ),
         h('div', { className: 'facet-bar' },
-          h('div', { className: 'facet-bar-fill', style: { width: `${fPct}%`, background: color } })
+          h('div', { className: 'facet-bar-fill', style: { width: `${facet.fPct}%`, background: color } })
         )
       );
       if (facet.text) {
@@ -804,10 +881,10 @@ function renderResults() {
       },
         h('span', { className: 'domain-title' }, domain.title),
         h('div', { className: 'domain-score-wrap' },
-          h('div', { className: 'domain-bar' },
-            h('div', { className: 'domain-bar-fill', style: { width: `${pct}%` } })
-          ),
-          h('span', { className: `domain-label ${domain.scoreText}` }, domain.scoreText)
+          h('div', { className: 'pctl-track' },
+            h('div', { className: 'pctl-marker', style: { left: `${percentile}%`, background: color } }),
+            h('div', { className: 'pctl-marker-label', style: { left: `${percentile}%` } }, ordinal(percentile))
+          )
         )
     );
 
@@ -826,7 +903,7 @@ function renderResults() {
     h('h3', {}, 'Share your results'),
     h('p', {
       style: { fontSize: '0.85rem', color: 'var(--text-dim)', marginBottom: '0.75rem' }
-    }, 'Your 30 facet scores are encoded directly in the URL — no server stores anything. No individual answers or personal information are included. Once shared, a link cannot be revoked — anyone with it can view these scores. ',
+    }, 'Your 30 facet scores are encoded directly in the link. Nothing is stored by the server, no individual answers or personal information are included. Anyone with these exact scores will get the same link. ',
       h('a', { href: '#/privacy', style: { fontSize: '0.85rem' } }, 'Learn more.')),
     h('div', { className: 'share-url' },
       shareInput,
@@ -1243,7 +1320,7 @@ function renderAbout() {
     '.'
   ));
   testSection.appendChild(h('p', { style: { marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-dim)' } },
-    'Note: some questions are phrased in the reverse direction (for example, "I don\'t talk a lot" for Extraversion). This is standard psychometric practice to improve measurement accuracy.'
+    'Note: Some questions are phrased in the reverse direction (for example, "I don\'t talk a lot" for Extraversion). This is standard psychometric practice to improve measurement accuracy.'
   ));
   page.appendChild(testSection);
 
@@ -1255,6 +1332,26 @@ function renderAbout() {
     'Personality scores are relatively stable over time, but not perfectly consistent. Small differences between sessions are normal \u2014 treat your results as a general portrait rather than a precise measurement.'
   ));
   page.appendChild(howSection);
+
+  // Sample report
+  const sampleSection = h('section', { className: 'privacy-section' });
+  sampleSection.appendChild(h('h3', {}, 'Sample Report'));
+  sampleSection.appendChild(h('p', {}, 'Want to see what the results look like without taking the full test? The button below generates a report from random answers so you can explore the format.'));
+  sampleSection.appendChild(h('button', {
+    className: 'btn',
+    style: { marginTop: '0.75rem' },
+    onClick: () => {
+      const qs = allQuestions[state.lang] || allQuestions['en'];
+      const answers = qs.map(() => Math.ceil(Math.random() * 5));
+      const scores = calculateScores(answers, qs);
+      const facetScores = extractFacetScores(scores);
+      navigate(encodeFacetScores(facetScores, state.lang));
+    }
+  }, 'Generate Sample Report'));
+  sampleSection.appendChild(h('p', { style: { marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-dim)' } },
+    'This uses random data and does not reflect any real person. Each click produces different results.'
+  ));
+  page.appendChild(sampleSection);
 
   // Open source
   const ossSection = h('section', { className: 'privacy-section' });
@@ -1420,20 +1517,29 @@ window.addEventListener('offline', updateOfflineBanner);
 updateOfflineBanner();
 
 // ---------------------------------------------------------------------------
-// Service Worker registration + first-install toast
+// Service Worker registration + update handling
 // ---------------------------------------------------------------------------
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js').then(reg => {
+  navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js', { updateViaCache: 'none' }).then(reg => {
+    // Check for updates on every page load (Safari/Edge can be slow otherwise)
+    reg.update().catch(() => {});
+
     reg.addEventListener('updatefound', () => {
       const newWorker = reg.installing;
       newWorker.addEventListener('statechange', () => {
-        if (newWorker.state === 'activated' && !navigator.serviceWorker.controller) {
-          const toast = document.createElement('div');
-          toast.setAttribute('role', 'status');
-          toast.textContent = 'App saved — works offline from now on';
-          toast.style.cssText = 'position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#2e7d32;color:#fff;padding:0.6rem 1.2rem;border-radius:6px;font-size:0.85rem;z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
-          document.body.appendChild(toast);
-          setTimeout(() => toast.remove(), 4000);
+        if (newWorker.state === 'activated') {
+          if (!navigator.serviceWorker.controller) {
+            // First install — show a toast
+            const toast = document.createElement('div');
+            toast.setAttribute('role', 'status');
+            toast.textContent = 'App saved — works offline from now on';
+            toast.style.cssText = 'position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#2e7d32;color:#fff;padding:0.6rem 1.2rem;border-radius:6px;font-size:0.85rem;z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+          } else {
+            // Update — reload to pick up the new version
+            location.reload();
+          }
         }
       });
     });

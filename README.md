@@ -22,6 +22,10 @@ Once the page loads in your browser, it works completely offline. The app saves 
 
 When you finish, you get your results broken down by the five personality domains and their thirty facets.
 
+<p align="center">
+  <img src="design/bigfive-results-preview.png" alt="Sample results showing Openness and Conscientiousness domains with percentile tracks, normative context, and facet breakdowns" width="680">
+</p>
+
 ### Sharing results
 
 If you want to share your results, the app gives you a link (or QR code). Here's what's important to understand: nothing is stored on a server. Your thirty facet summary scores are encoded directly into the link itself. When someone opens that link, their browser decodes the scores and displays them. That's it.

@@ -1,18 +1,20 @@
-const CACHE_NAME = 'bigfive-offline-v1';
+// __BUILD_VERSION__ is replaced at build time by the Vite plugin.
+// During development it stays as-is and the SW uses a dev cache name.
+const BUILD_VERSION = '__BUILD_VERSION__';
+const CACHE_NAME = 'bigfive-' + BUILD_VERSION;
 
-// Derive the app's base path from the SW's own location.
-// e.g. if SW is at /bigfive-test/sw.js, BASE = '/bigfive-test/'
-//      if SW is at /sw.js,              BASE = '/'
 const BASE = self.location.pathname.replace(/sw\.js$/, '');
 
 self.addEventListener('install', (event) => {
+  // Take over immediately — don't wait for old tabs to close
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.add(BASE))
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+  // Delete every cache except the current version
   event.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
@@ -23,11 +25,13 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-
   if (request.method !== 'GET') return;
   if (!request.url.startsWith(self.location.origin)) return;
 
-  // For navigation requests (HTML), serve the cached shell
+  // Navigation requests (HTML pages): cache-first, network fallback.
+  // The SW install event always fetches fresh HTML into the new cache,
+  // so after an update the reload will serve the latest version
+  // without needing to hit the network on every page load.
   if (request.mode === 'navigate') {
     event.respondWith(
       caches.match(BASE).then(cached => cached || fetch(request))
@@ -35,7 +39,8 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // For all other assets: cache-first, falling back to network
+  // Hashed assets (JS/CSS bundles): cache-first.
+  // Vite gives them unique filenames so staleness isn't an issue.
   event.respondWith(
     caches.match(request).then(cached => {
       if (cached) return cached;

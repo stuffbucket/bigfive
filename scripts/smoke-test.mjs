@@ -97,6 +97,17 @@ if (existsSync(join(dist, 'sw.js'))) {
   const sw = readFileSync(join(dist, 'sw.js'), 'utf8');
   check('contains cache logic', sw.includes('caches') || sw.includes('CACHE_NAME'));
   check('contains fetch handler', sw.includes('fetch'));
+  check('build version was injected', !sw.includes('__BUILD_VERSION__'));
+
+  // Privacy: ensure sw.js contains no external URLs (importScripts, CDN, etc.)
+  const urlPattern = /https?:\/\/[^\s'"`)]+/g;
+  const foundUrls = [...sw.matchAll(urlPattern)].map(m => m[0]);
+  const ownOriginPattern = /^https?:\/\/localhost[:/]/;
+  const externalUrls = foundUrls.filter(u => !ownOriginPattern.test(u));
+  check('no external URLs in sw.js', externalUrls.length === 0);
+  if (externalUrls.length > 0) {
+    console.error('    External URLs found:', externalUrls);
+  }
 }
 
 // ---------------------------------------------------------------------------

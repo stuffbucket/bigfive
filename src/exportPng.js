@@ -106,13 +106,34 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// Word-wrap text to fit within maxWidth; returns array of lines
+function wrapText(ctx, text, maxWidth) {
+  const lines = [];
+  for (const paragraph of text.split('\n')) {
+    if (paragraph.trim() === '') { lines.push(''); continue; }
+    const words = paragraph.split(/\s+/);
+    let line = '';
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
 function drawBar(ctx, x, y, totalW, pct, color) {
   // Track (background)
   roundRect(ctx, x, y, totalW, BAR_H, BAR_H / 2);
   ctx.fillStyle = T.bgHover;
   ctx.fill();
   // Fill
-  const fillW = Math.max(BAR_H, (pct / 100) * totalW); // min width = radius so it looks round
+  const fillW = Math.max(BAR_H, (pct / 100) * totalW);
   roundRect(ctx, x, y, fillW, BAR_H, BAR_H / 2);
   ctx.fillStyle = color;
   ctx.fill();
@@ -137,29 +158,82 @@ function drawLabel(ctx, text, x, y, result) {
   const tw = ctx.measureText(label).width;
   const lw = tw + 14;
   const lh = 18;
-  // Badge background
   roundRect(ctx, x, y - lh / 2, lw, lh, 4);
   ctx.fillStyle = bg;
   ctx.fill();
-  // Badge text
   ctx.fillStyle = fg;
   ctx.textBaseline = 'middle';
   ctx.fillText(label, x + 7, y);
   return lw;
 }
 
-// Measures total height of one domain card without drawing anything
+// ---------------------------------------------------------------------------
+// Percentile track — mirrors the on-screen pctl-track exactly
+// ---------------------------------------------------------------------------
+const TRACK_H = 6;
+
+function drawPercentileTrack(ctx, x, y, totalW, percentile, color) {
+  // Track background
+  roundRect(ctx, x, y, totalW, TRACK_H, TRACK_H / 2);
+  ctx.fillStyle = T.bgHover;
+  ctx.fill();
+
+  // Marker
+  const markerR = 5;
+  const markerX = x + (percentile / 100) * totalW;
+  const markerY = y + TRACK_H / 2;
+  ctx.beginPath();
+  ctx.arc(markerX, markerY, markerR, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  return TRACK_H;
+}
+
+// ---------------------------------------------------------------------------
+// Measure / draw helpers use pre-computed data from the results objects.
+// No percentile or norm recalculation happens here.
+// ---------------------------------------------------------------------------
+
+// Measures total height of one domain card
 function measureCard(ctx, domain) {
+  const innerW = (W - PAD * 2) - CARD_PAD * 2;
   let h = CARD_PAD;         // top padding
   h += 22;                  // domain title row
-  h += 6;                   // gap after title row
-  h += BAR_H;               // domain bar
-  h += 16;                  // gap
+  h += 6;                   // gap
+  h += TRACK_H;             // percentile track
+  h += 4;                   // gap
+  // Ordinal label below track
+  h += 14;
+  h += 8;                   // gap
+
+  // Norm context text
+  if (domain.normText) {
+    ctx.font = `400 11px ${FONT}`;
+    const normLines = wrapText(ctx, domain.normText, innerW);
+    h += normLines.length * 15;
+    h += 8;
+  }
+
+  // Domain description text
+  if (domain.plainText) {
+    ctx.font = `400 11px ${FONT}`;
+    const descLines = wrapText(ctx, domain.plainText, innerW);
+    h += descLines.length * 15;
+    h += 12;
+  }
+
   // facets
-  domain.facets.forEach(() => {
+  domain.facets.forEach(facet => {
     h += 14;    // facet title row
     h += 4;
     h += FBAR_H;
+    // facet description text
+    if (facet.plainText) {
+      ctx.font = `400 10px ${FONT}`;
+      const facetLines = wrapText(ctx, facet.plainText, innerW);
+      h += 6 + facetLines.length * 13;
+    }
     h += 10;    // gap between facets
   });
   h += CARD_PAD;            // bottom padding
@@ -171,7 +245,8 @@ function drawCard(ctx, domain, cardX, cardY, cardW) {
   const color   = T[domain.domain];
   const innerW  = cardW - CARD_PAD * 2;
   const cardH   = measureCard(ctx, domain);
-  const pct     = (domain.score / (domain.count * 5)) * 100;
+  // Use the pre-computed percentile from the results page
+  const percentile = domain.percentile;
 
   // Card background
   roundRect(ctx, cardX, cardY, cardW, cardH, CARD_RADIUS);
@@ -182,43 +257,89 @@ function drawCard(ctx, domain, cardX, cardY, cardW) {
   roundRect(ctx, cardX, cardY, 4, cardH, CARD_RADIUS);
   ctx.fillStyle = color;
   ctx.fill();
-  // Fill overlap to make left border square on right side
   ctx.fillRect(cardX + 2, cardY, 2, cardH);
 
   let cx = cardX + CARD_PAD;
   let cy = cardY + CARD_PAD;
 
   // --- Domain header row ---
-  const BAR_AREA_W = 150;
-
   // Title
   ctx.font        = `600 15px ${FONT}`;
   ctx.fillStyle   = T.text;
   ctx.textBaseline = 'middle';
   ctx.fillText(domain.title, cx, cy + 11);
 
-  // Bar + label (right-aligned inside card)
-  const barX    = cardX + CARD_PAD + innerW - BAR_AREA_W;
-  const barY    = cy + 11 - BAR_H / 2;
-  const barW    = 100;
-  drawBar(ctx, barX, barY, barW, pct, color);
-
-  // Score percent
-  ctx.font      = `500 11px ${FONT}`;
+  // Ordinal + label badge right-aligned on header row
+  const ordStr = domain.ordinalStr;
+  ctx.font = `500 11px ${FONT}`;
   ctx.fillStyle = T.textDim;
-  ctx.textBaseline = 'middle';
-  ctx.fillText(`${Math.round(pct)}%`, barX + barW + 6, cy + 11);
+  const ordW = ctx.measureText(ordStr).width;
+  // Label badge
+  const labelW = (() => {
+    const { bg, fg } = labelStyle(domain.scoreText);
+    const label = domain.scoreText.toUpperCase();
+    ctx.font = `600 10px ${FONT}`;
+    const tw = ctx.measureText(label).width;
+    return tw + 14;
+  })();
+  const badgeX = cx + innerW - labelW;
+  const ordX   = badgeX - ordW - 8;
+  ctx.font = `500 11px ${FONT}`;
+  ctx.fillStyle = T.textDim;
+  ctx.fillText(ordStr, ordX, cy + 11);
+  drawLabel(ctx, domain.scoreText, badgeX, cy + 11, domain.scoreText);
 
-  // Label badge (to the right of percent)
-  const pctW = ctx.measureText(`${Math.round(pct)}%`).width;
-  drawLabel(ctx, domain.scoreText, barX + barW + 6 + pctW + 8, cy + 11, domain.scoreText);
+  cy += 22 + 6;
 
-  cy += 22 + 6 + BAR_H + 16;
+  // Percentile track (matches on-screen pctl-track)
+  drawPercentileTrack(ctx, cx, cy, innerW, percentile, color);
+  cy += TRACK_H + 4;
+
+  // Scale labels under track
+  ctx.font = `400 9px ${FONT}`;
+  ctx.fillStyle = T.textDim;
+  ctx.textBaseline = 'top';
+  ctx.fillText('1st', cx, cy);
+  const midLabel = '50th';
+  const midLabelW = ctx.measureText(midLabel).width;
+  ctx.fillText(midLabel, cx + innerW / 2 - midLabelW / 2, cy);
+  const rightLabel = '99th';
+  const rightLabelW = ctx.measureText(rightLabel).width;
+  ctx.fillText(rightLabel, cx + innerW - rightLabelW, cy);
+  cy += 14 + 8;
+
+  // Norm context text
+  if (domain.normText) {
+    ctx.font = `400 11px ${FONT}`;
+    ctx.fillStyle = T.textDim;
+    ctx.textBaseline = 'top';
+    const normLines = wrapText(ctx, domain.normText, innerW);
+    for (const line of normLines) {
+      ctx.fillText(line, cx, cy);
+      cy += 15;
+    }
+    cy += 8;
+  }
+
+  // Domain description text
+  if (domain.plainText) {
+    ctx.font = `400 11px ${FONT}`;
+    ctx.fillStyle = T.textDim;
+    ctx.textBaseline = 'top';
+    const descLines = wrapText(ctx, domain.plainText, innerW);
+    for (const line of descLines) {
+      if (line === '') { cy += 8; continue; }
+      ctx.fillText(line, cx, cy);
+      cy += 15;
+    }
+    cy += 12;
+  }
 
   // --- Facets ---
   domain.facets.forEach((facet) => {
-    const fMax = facet.count * 5;
-    const fPct = (facet.score / fMax) * 100;
+    // Use pre-computed facet values
+    const fMax = facet.fMax;
+    const fPct = facet.fPct;
 
     // Facet title
     ctx.font        = `500 12px ${FONT}`;
@@ -237,7 +358,23 @@ function drawCard(ctx, domain, cardX, cardY, cardW) {
 
     // Facet bar (full width)
     drawFacetBar(ctx, cx, cy, innerW, fPct, color);
-    cy += FBAR_H + 10;
+    cy += FBAR_H;
+
+    // Facet description text
+    if (facet.plainText) {
+      cy += 6;
+      ctx.font = `400 10px ${FONT}`;
+      ctx.fillStyle = T.textDim;
+      ctx.textBaseline = 'top';
+      const facetLines = wrapText(ctx, facet.plainText, innerW);
+      for (const line of facetLines) {
+        if (line === '') { cy += 6; continue; }
+        ctx.fillText(line, cx, cy);
+        cy += 13;
+      }
+    }
+
+    cy += 10;
   });
 
   return cardH;
@@ -245,6 +382,8 @@ function drawCard(ctx, domain, cardX, cardY, cardW) {
 
 // ---------------------------------------------------------------------------
 // Main export function
+// Receives the enriched results array from renderResults() — all percentiles,
+// normative context, and plain-text descriptions are pre-computed.
 // ---------------------------------------------------------------------------
 export function exportResultsPng(results) {
   // ------------------------------------------------------------------
