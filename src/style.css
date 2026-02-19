@@ -5,7 +5,7 @@
   --bg-card: #16213e;
   --bg-hover: #1f2f50;
   --text: #e0e0e0;
-  --text-dim: #8892a4;
+  --text-dim: #9ba3b5;
   --accent: #4fc3f7;
   --accent-dim: #2a7fa8;
   --green: #66bb6a;
@@ -58,8 +58,23 @@ header h1 {
 }
 header h1:hover { color: var(--accent); }
 header nav { display: flex; align-items: baseline; gap: 1rem; }
-header nav a { color: var(--text-dim); font-size: 0.9rem; }
+header nav a { color: var(--text-dim); font-size: 0.9rem; padding: 0.5rem 0.25rem; }
 header nav a:hover { color: var(--text); }
+
+/* Skip-to-content link */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1001;
+  padding: 0.75rem 1.5rem;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+  border-radius: 0 0 var(--radius) 0;
+  text-decoration: none;
+}
+.skip-link:focus { left: 0; }
 
 /* --- Home --- */
 .hero { text-align: center; padding: 3rem 0; }
@@ -284,6 +299,8 @@ header nav a:hover { color: var(--text); }
   color: var(--text);
   font-size: 0.85rem;
   font-family: monospace;
+  cursor: default;
+  opacity: 0.85;
 }
 .copy-toast {
   font-size: 0.8rem;
@@ -462,7 +479,8 @@ footer {
   margin-bottom: 1rem;
 }
 .verify-tab {
-  padding: 0.4rem 0.85rem;
+  padding: 0.6rem 1rem;
+  min-height: 44px;
   border-radius: var(--radius);
   border: 1px solid var(--bg-hover);
   background: transparent;

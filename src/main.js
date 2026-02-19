@@ -343,12 +343,39 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+function safeSetHTML(el, html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  while (el.firstChild) el.removeChild(el.firstChild);
+  for (const node of doc.body.childNodes) el.appendChild(document.importNode(node, true));
+}
+
+function trapFocus(overlay, onDismiss) {
+  const handler = (e) => {
+    if (e.key === 'Escape') { onDismiss(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = overlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  overlay._trapHandler = handler;
+  document.addEventListener('keydown', handler);
+  requestAnimationFrame(() => { const btn = overlay.querySelector('button'); if (btn) btn.focus(); });
+}
+
+function dismissModal(overlay) {
+  if (overlay._trapHandler) document.removeEventListener('keydown', overlay._trapHandler);
+  overlay.remove();
+}
+
 function renderHeader() {
   const langOptions = Object.entries(languages).map(([id, name]) =>
     h('option', { value: id, ...(id === state.lang ? { selected: '' } : {}) }, name)
   );
   const select = h('select', {
     className: 'lang-select',
+    'aria-label': 'Select language',
     onChange: (e) => {
       state.lang = e.target.value;
       localStorage.setItem('b5-lang', state.lang);
@@ -437,21 +464,22 @@ function renderTest() {
   // On first visit to the test page per session, ask about shared computers
   if (!sessionStorage.getItem('b5-shared-check')) {
     sessionStorage.setItem('b5-shared-check', '1');
-    const overlay = h('div', { className: 'data-modal-overlay' });
+    const overlay = h('div', { className: 'data-modal-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-shared' });
+    const close = () => dismissModal(overlay);
     const modal = h('div', { className: 'data-modal' },
-      h('h3', {}, 'Before you start'),
+      h('h3', { id: 'modal-shared' }, 'Before you start'),
       h('p', {}, 'Are you using a public computer or a shared browser profile?'),
       h('div', { className: 'data-modal-buttons' },
         h('button', {
           className: 'btn btn--sm',
           onClick: () => {
-            overlay.remove();
+            close();
             navigate('#/privacy');
           }
         }, 'Yes'),
         h('button', {
           className: 'btn btn--outline btn--sm',
-          onClick: () => overlay.remove()
+          onClick: close
         }, 'No')
       ),
       h('p', { style: { marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-dim)' } },
@@ -460,6 +488,7 @@ function renderTest() {
     );
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+    trapFocus(overlay, close);
   }
 
   const questions = allQuestions[state.lang] || allQuestions['en'];
@@ -474,7 +503,7 @@ function renderTest() {
   const answered = state.answers.filter(a => a > 0).length;
 
   const progress = h('div', { className: 'progress-wrap' },
-    h('div', { className: 'progress-bar' },
+    h('div', { className: 'progress-bar', role: 'progressbar', 'aria-valuenow': String(answered), 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-label': `${answered} of ${total} questions answered` },
       h('div', { className: 'progress-fill', style: { width: `${(answered / total) * 100}%` } })
     ),
     h('div', { className: 'progress-text' },
@@ -485,8 +514,10 @@ function renderTest() {
 
   const choices = h('div', { className: 'choices' });
   q.choices.forEach(choice => {
+    const isSelected = state.answers[idx] === choice.score;
     const btn = h('button', {
-      className: `choice${state.answers[idx] === choice.score ? ' selected' : ''}`,
+      className: `choice${isSelected ? ' selected' : ''}`,
+      'aria-pressed': isSelected ? 'true' : 'false',
       onClick: () => {
         state.answers[idx] = choice.score;
         localStorage.setItem('b5-progress', JSON.stringify(state.answers));
@@ -603,7 +634,7 @@ function renderResults() {
 
     // Description
     body.appendChild(h('div', { className: 'domain-desc' }));
-    body.lastChild.innerHTML = domain.text;
+    safeSetHTML(body.lastChild, domain.text);
 
     // Facets
     domain.facets.forEach(facet => {
@@ -620,16 +651,24 @@ function renderResults() {
       );
       if (facet.text) {
         const textEl = h('div', { className: 'facet-text' });
-        textEl.innerHTML = facet.text;
+        safeSetHTML(textEl, facet.text);
         facetEl.appendChild(textEl);
       }
       body.appendChild(facetEl);
     });
 
-    const card = h('div', { className: 'domain-card', style: { '--domain-color': color } },
-      h('div', {
+    const domainHeader = h('div', {
         className: 'domain-header',
-        onClick: () => body.classList.toggle('open')
+        role: 'button',
+        tabindex: '0',
+        'aria-expanded': 'false',
+        onClick: () => {
+          const open = body.classList.toggle('open');
+          domainHeader.setAttribute('aria-expanded', String(open));
+        },
+        onKeydown: (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); domainHeader.click(); }
+        }
       },
         h('span', { className: 'domain-title' }, domain.title),
         h('div', { className: 'domain-score-wrap' },
@@ -638,7 +677,10 @@ function renderResults() {
           ),
           h('span', { className: `domain-label ${domain.scoreText}` }, domain.scoreText)
         )
-      ),
+    );
+
+    const card = h('div', { className: 'domain-card', style: { '--domain-color': color } },
+      domainHeader,
       body
     );
     cards.appendChild(card);
@@ -647,12 +689,12 @@ function renderResults() {
   // Share section
   const shareUrl = location.href;
   const shareInput = h('input', { type: 'text', value: shareUrl, readonly: '' });
-  const toast = h('div', { className: 'copy-toast' }, 'Copied!');
+  const toast = h('div', { className: 'copy-toast', role: 'status', 'aria-live': 'polite' }, 'Copied!');
   const share = h('div', { className: 'share-section' },
     h('h3', {}, 'Share your results'),
     h('p', {
       style: { fontSize: '0.85rem', color: 'var(--text-dim)', marginBottom: '0.75rem' }
-    }, 'Your 30 facet scores are encoded directly in the URL — no server stores anything. No individual answers or personal information are included. ',
+    }, 'Your 30 facet scores are encoded directly in the URL — no server stores anything. No individual answers or personal information are included. Once shared, a link cannot be revoked — anyone with it can view these scores. ',
       h('a', { href: '#/privacy', style: { fontSize: '0.85rem' } }, 'Learn more.')),
     h('div', { className: 'share-url' },
       shareInput,
@@ -702,7 +744,11 @@ function renderResults() {
     }, 'Save as PNG')
   );
 
-  return h('div', {}, header, cards, share, retake);
+  const disclaimer = h('p', {
+    style: { fontSize: '0.8rem', color: 'var(--text-dim)', textAlign: 'center', marginTop: '1.5rem', lineHeight: '1.6' }
+  }, 'This is a research-based personality inventory, not a clinical or diagnostic tool. All levels of each trait are part of normal human variation. Results are based on self-report and may vary slightly between sessions.');
+
+  return h('div', {}, header, cards, share, retake, disclaimer);
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,11 +1048,18 @@ function renderPrivacy() {
     p('Want to remove all traces of this app from your browser? The button below will erase all saved data (your results, your language choice, and any in-progress answers) and remove the saved copy of the app itself. It is like you never visited.'),
     h('button', {
       className: 'btn btn--delete',
-      onClick: async () => {
-        // Clear all localStorage items used by the app
+      onClick: async function () {
+        if (!this.dataset.confirmed) {
+          this.dataset.confirmed = '1';
+          this.textContent = 'Are you sure? Click again to confirm';
+          setTimeout(() => { delete this.dataset.confirmed; this.textContent = 'Delete all my data and remove this app'; }, 5000);
+          return;
+        }
+        // Clear all storage
         localStorage.removeItem('b5-lang');
         localStorage.removeItem('b5-progress');
         localStorage.removeItem('b5-results');
+        sessionStorage.clear();
 
         // Unregister service worker
         if ('serviceWorker' in navigator) {
@@ -1057,12 +1110,18 @@ function renderAbout() {
     h('a', { href: 'https://www.ocf.berkeley.edu/~johnlab/measures.html', target: '_blank', rel: 'noopener' }, 'Berkeley Personality Lab'),
     '.'
   ));
+  testSection.appendChild(h('p', { style: { marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-dim)' } },
+    'Note: some questions are phrased in the reverse direction (for example, "I don\'t talk a lot" for Extraversion). This is standard psychometric practice to improve measurement accuracy.'
+  ));
   page.appendChild(testSection);
 
   // How it works
   const howSection = h('section', { className: 'privacy-section' });
   howSection.appendChild(h('h3', {}, 'How It Works'));
   howSection.appendChild(h('p', {}, 'The entire test runs in your browser. No servers, no accounts, no tracking. Your answers are scored locally and stored only on your device. You can delete everything from the Privacy page at any time.'));
+  howSection.appendChild(h('p', { style: { marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-dim)' } },
+    'Personality scores are relatively stable over time, but not perfectly consistent. Small differences between sessions are normal \u2014 treat your results as a general portrait rather than a precise measurement.'
+  ));
   page.appendChild(howSection);
 
   // Open source
@@ -1124,18 +1183,22 @@ function render() {
   const route = getRoute();
   app.innerHTML = '';
 
+  app.appendChild(h('a', { href: '#main-content', className: 'skip-link' }, 'Skip to content'));
   app.appendChild(renderHeader());
 
+  const main = h('main', { id: 'main-content', tabindex: '-1' });
   switch (route) {
-    case 'test': app.appendChild(renderTest()); break;
-    case 'results': app.appendChild(renderResults()); break;
-    case 'privacy': app.appendChild(renderPrivacy()); break;
-    case 'about': app.appendChild(renderAbout()); break;
-    default: app.appendChild(renderHome()); break;
+    case 'test': main.appendChild(renderTest()); break;
+    case 'results': main.appendChild(renderResults()); break;
+    case 'privacy': main.appendChild(renderPrivacy()); break;
+    case 'about': main.appendChild(renderAbout()); break;
+    default: main.appendChild(renderHome()); break;
   }
+  app.appendChild(main);
 
   app.appendChild(renderFooter());
   window.scrollTo(0, 0);
+  main.focus({ preventScroll: true });
 }
 
 window.addEventListener('hashchange', render);
@@ -1153,14 +1216,15 @@ render();
     ? 'in-progress answers and previous results'
     : hasProgress ? 'in-progress answers' : 'previous results';
 
-  const overlay = h('div', { className: 'data-modal-overlay' });
+  const overlay = h('div', { className: 'data-modal-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-stored' });
+  const close = () => dismissModal(overlay);
   const modal = h('div', { className: 'data-modal' },
-    h('h3', {}, 'Saved data found'),
+    h('h3', { id: 'modal-stored' }, 'Saved data found'),
     h('p', {}, `This app has ${what} stored in your browser from a previous visit. Would you like to keep that data or clear it?`),
     h('div', { className: 'data-modal-buttons' },
       h('button', {
         className: 'btn btn--outline btn--sm',
-        onClick: () => overlay.remove()
+        onClick: close
       }, 'Keep'),
       h('button', {
         className: 'btn btn--sm',
@@ -1169,7 +1233,7 @@ render();
           localStorage.removeItem('b5-results');
           state.answers = null;
           state.currentQuestion = 0;
-          overlay.remove();
+          close();
           render();
         }
       }, 'Clear')
@@ -1177,6 +1241,7 @@ render();
   );
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
+  trapFocus(overlay, close);
 })();
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1253,7 @@ function updateOfflineBanner() {
     if (existing) return;
     const banner = document.createElement('div');
     banner.id = 'offline-banner';
+    banner.setAttribute('role', 'status');
     banner.textContent = 'You are offline — running from saved cache';
     banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;padding:0.5rem 1rem;text-align:center;background:#2d2d4e;color:#a0a0c0;font-size:0.8rem;z-index:999;border-top:1px solid #3d3d6e';
     document.body.appendChild(banner);
@@ -1209,6 +1275,7 @@ if ('serviceWorker' in navigator) {
       newWorker.addEventListener('statechange', () => {
         if (newWorker.state === 'activated' && !navigator.serviceWorker.controller) {
           const toast = document.createElement('div');
+          toast.setAttribute('role', 'status');
           toast.textContent = 'App saved — works offline from now on';
           toast.style.cssText = 'position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#2e7d32;color:#fff;padding:0.6rem 1.2rem;border-radius:6px;font-size:0.85rem;z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
           document.body.appendChild(toast);

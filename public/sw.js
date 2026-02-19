@@ -41,8 +41,11 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached;
       return fetch(request).then(response => {
         if (response.ok) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+          const ct = response.headers.get('Content-Type') || '';
+          if (ct.startsWith('text/') || ct.startsWith('application/javascript') || ct.startsWith('application/json') || ct.startsWith('image/')) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+          }
         }
         return response;
       });
