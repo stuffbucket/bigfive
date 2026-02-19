@@ -18,5 +18,8 @@
   "devDependencies": {
     "eslint": "^10.0.0",
     "vite": "^6.4.1"
+  },
+  "dependencies": {
+    "motion": "^12.34.2"
   }
 }

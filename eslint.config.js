@@ -14,6 +14,7 @@ export default [
         localStorage: 'readonly',
         location: 'readonly',
         setTimeout: 'readonly',
+        clearTimeout: 'readonly',
         URL: 'readonly',
         Blob: 'readonly',
         HTMLCanvasElement: 'readonly',

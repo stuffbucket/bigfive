@@ -2,8 +2,10 @@ import './style.css';
 import allQuestions from './data/questions.json';
 import allResults from './data/results.json';
 import languages from './data/languages.json';
+import resultOverrides from './data/result-overrides.json';
 import { exportResultsPng } from './exportPng.js';
 import { generateQRSvg } from './qr.js';
+import { animate } from 'motion';
 
 // ---------------------------------------------------------------------------
 // State
@@ -12,7 +14,8 @@ const state = {
   lang: localStorage.getItem('b5-lang') || 'en',
   currentQuestion: 0,
   answers: JSON.parse(localStorage.getItem('b5-progress') || 'null'),
-  results: null
+  results: null,
+  slideDir: 'forward' // 'forward' or 'back' — controls slide animation direction
 };
 
 // ---------------------------------------------------------------------------
@@ -52,6 +55,11 @@ function generateResults(scores, lang) {
     const ds = scores[domain.domain];
     if (!ds) return null;
     const resultText = domain.results.find(r => r.score === ds.result);
+    // Use rewritten descriptions when available for this language
+    const langOverrides = resultOverrides[lang];
+    const override = langOverrides && langOverrides.domains && langOverrides.domains[domain.domain]
+      ? langOverrides.domains[domain.domain][ds.result]
+      : null;
     const facets = domain.facets.map(f => {
       const fs = ds.facet[f.facet.toString()] || {};
       return { ...f, score: fs.score || 0, count: fs.count || 0, scoreText: fs.result || 'neutral' };
@@ -64,7 +72,7 @@ function generateResults(scores, lang) {
       score: ds.score,
       count: ds.count,
       scoreText: ds.result,
-      text: resultText ? resultText.text : '',
+      text: override || (resultText ? resultText.text : ''),
       facets
     };
   }).filter(Boolean);
@@ -453,7 +461,7 @@ function renderHome() {
   return h('div', {},
     h('div', { className: 'hero' },
       h('h2', {}, 'Big Five Personality Test'),
-      h('p', { className: 'subtitle' }, '120 questions. 10 minutes. Completely private — nothing leaves your browser.'),
+      h('p', { className: 'subtitle' }, '120 questions. 10 minutes. Completely private.'),
       buttons
     ),
     features
@@ -466,9 +474,10 @@ function renderTest() {
     sessionStorage.setItem('b5-shared-check', '1');
     const overlay = h('div', { className: 'data-modal-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-shared' });
     const close = () => dismissModal(overlay);
-    const modal = h('div', { className: 'data-modal' },
-      h('h3', { id: 'modal-shared' }, 'Before you start'),
-      h('p', {}, 'Are you using a public computer or a shared browser profile?'),
+    const modal = h('div', { className: 'data-modal shared-modal' },
+      h('div', { className: 'shared-modal-icon' }, '🔒'),
+      h('h3', { id: 'modal-shared' }, 'Quick privacy check'),
+      h('p', { className: 'shared-modal-lead' }, 'Your answers are saved in this browser. Is anyone else able to use it?'),
       h('div', { className: 'data-modal-buttons' },
         h('button', {
           className: 'btn btn--sm',
@@ -476,29 +485,36 @@ function renderTest() {
             close();
             navigate('#/privacy');
           }
-        }, 'Yes'),
+        }, 'Yes, it\u2019s shared'),
         h('button', {
           className: 'btn btn--outline btn--sm',
           onClick: close
-        }, 'No')
+        }, 'No, it\u2019s mine')
       ),
-      h('p', { style: { marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-dim)' } },
-        'This test stores answers in your browser. On a shared device, anyone with access to this browser could see your results. You can delete all stored data from the Privacy page when you\'re done.'
+      h('p', { className: 'shared-modal-hint' },
+        'On a shared device you can delete all stored data from the ',
+        h('a', { href: '#/privacy', onClick: close }, 'Privacy page'),
+        ' when you\u2019re done.'
       )
     );
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     trapFocus(overlay, close);
+    animate(modal, { opacity: [0, 1], scale: [0.95, 1] }, { duration: 0.2, easing: [0, 0, 0.2, 1] });
   }
 
   const questions = allQuestions[state.lang] || allQuestions['en'];
   if (!state.answers) {
     state.answers = new Array(questions.length).fill(0);
     state.currentQuestion = 0;
+  } else {
+    // Always clamp to the first unanswered question (can't skip ahead)
+    const firstUnanswered = state.answers.indexOf(0);
+    const limit = firstUnanswered === -1 ? questions.length - 1 : firstUnanswered;
+    if (state.currentQuestion > limit) state.currentQuestion = limit;
   }
 
   const idx = state.currentQuestion;
-  const q = questions[idx];
   const total = questions.length;
   const answered = state.answers.filter(a => a > 0).length;
 
@@ -512,84 +528,191 @@ function renderTest() {
     )
   );
 
-  const choices = h('div', { className: 'choices' });
-  q.choices.forEach(choice => {
-    const isSelected = state.answers[idx] === choice.score;
-    const btn = h('button', {
-      className: `choice${isSelected ? ' selected' : ''}`,
-      'aria-pressed': isSelected ? 'true' : 'false',
-      onClick: () => {
-        state.answers[idx] = choice.score;
-        localStorage.setItem('b5-progress', JSON.stringify(state.answers));
-        // Auto-advance after short delay
-        setTimeout(() => {
-          if (idx < total - 1) {
-            state.currentQuestion = idx + 1;
-            render();
-          } else {
-            render(); // Re-render to show finish button
-          }
-        }, 200);
-        render(); // Immediate render for selection highlight
-      }
-    }, choice.text);
-    choices.appendChild(btn);
-  });
+  let advanceTimer = null;
+  let transitioning = false;
 
-  const card = h('div', { className: 'question-card' },
-    h('div', { className: 'question-num' }, `${idx + 1} / ${total}`),
-    h('div', { className: 'question-text' }, q.text),
-    choices
-  );
+  // Build a question card + nav for a given index (without full re-render)
+  function buildCard(i) {
+    const qi = questions[i];
+    const fi = state.answers.indexOf(0);
+    const frt = fi === -1 ? total - 1 : fi;
+    const reviewing = state.answers[i] > 0 && i < frt;
+    const allDone = state.answers.every(a => a > 0);
 
-  const nav = h('div', { className: 'test-nav' });
+    const ch = h('div', { className: 'choices' });
+    qi.choices.forEach(choice => {
+      const sel = state.answers[i] === choice.score;
+      const b = h('button', {
+        className: `choice${sel ? ' selected' : ''}`,
+        'aria-pressed': sel ? 'true' : 'false',
+        onClick: () => handleAnswer(b, ch, i, choice.score)
+      }, choice.text);
+      ch.appendChild(b);
+    });
 
-  if (idx > 0) {
-    nav.appendChild(h('button', {
-      className: 'btn btn--outline btn--sm',
-      onClick: () => { state.currentQuestion = idx - 1; render(); }
-    }, 'Back'));
-  } else {
-    nav.appendChild(h('span'));
+    const crd = h('div', { className: 'question-card' },
+      h('div', { className: 'question-num' }, `${i + 1} / ${total}`),
+      h('div', { className: 'question-text' }, qi.text),
+      ch
+    );
+
+    const nv = h('div', { className: 'test-nav' });
+    if (i > 0) {
+      nv.appendChild(h('button', {
+        className: 'btn btn--outline btn--sm',
+        onClick: () => transitionTo(i - 1, 'back')
+      }, '\u2190 Back'));
+    } else {
+      nv.appendChild(h('span'));
+    }
+    if (allDone) {
+      nv.appendChild(h('button', {
+        className: 'btn',
+        onClick: () => {
+          const qs = allQuestions[state.lang] || allQuestions['en'];
+          const scores = calculateScores(state.answers, qs);
+          const facetScores = extractFacetScores(scores);
+          localStorage.setItem('b5-results', JSON.stringify({
+            answers: state.answers, facetScores, lang: state.lang
+          }));
+          localStorage.removeItem('b5-progress');
+          navigate(encodeFacetScores(facetScores, state.lang));
+        }
+      }, 'See Results'));
+    } else if (reviewing) {
+      nv.appendChild(h('button', {
+        className: 'btn btn--sm',
+        onClick: () => transitionTo(i + 1, 'forward')
+      }, 'Next \u2192'));
+    } else {
+      nv.appendChild(h('span'));
+    }
+
+    return { card: crd, nav: nv };
   }
 
-  const allAnswered = state.answers.every(a => a > 0);
-
-  if (idx < total - 1) {
-    nav.appendChild(h('button', {
-      className: 'btn btn--sm',
-      onClick: () => { state.currentQuestion = idx + 1; render(); }
-    }, 'Skip'));
-  } else if (allAnswered) {
-    nav.appendChild(h('button', {
-      className: 'btn',
-      onClick: () => {
-        const questions   = allQuestions[state.lang] || allQuestions['en'];
-        const scores      = calculateScores(state.answers, questions);
-        const facetScores = extractFacetScores(scores);
-        // Persist both formats: facetScores for v2 URLs, answers for any future
-        // tooling that might need to recompute from raw responses.
-        localStorage.setItem('b5-results', JSON.stringify({
-          answers:     state.answers,
-          facetScores,
-          lang:        state.lang
-        }));
-        localStorage.removeItem('b5-progress');
-        navigate(encodeFacetScores(facetScores, state.lang));
-      }
-    }, 'See Results'));
-  } else {
-    const unanswered = state.answers.reduce((acc, a, i) => a === 0 ? [...acc, i] : acc, []);
-    nav.appendChild(h('button', {
-      className: 'btn btn--outline btn--sm',
-      onClick: () => {
-        state.currentQuestion = unanswered[0];
-        render();
-      }
-    }, `${unanswered.length} unanswered — go to first`));
+  // Update progress bar/text in-place
+  function updateProgress(answeredCount, questionIdx) {
+    const bar = document.querySelector('.progress-fill');
+    const spans = document.querySelectorAll('.progress-text span');
+    if (bar) bar.style.width = `${(answeredCount / total) * 100}%`;
+    if (spans[0]) spans[0].textContent = `Question ${questionIdx + 1} of ${total}`;
+    if (spans[1]) spans[1].textContent = `${answeredCount} answered`;
+    const pb = document.querySelector('.progress-bar');
+    if (pb) {
+      pb.setAttribute('aria-valuenow', String(answeredCount));
+      pb.setAttribute('aria-label', `${answeredCount} of ${total} questions answered`);
+    }
   }
 
-  return h('div', { className: 'test-container' }, progress, card, nav);
+  // Transition to a new question with animation (no full re-render)
+  function transitionTo(newIdx, dir) {
+    if (transitioning) return;
+    transitioning = true;
+    state.currentQuestion = newIdx;
+    state.slideDir = dir;
+
+    const oldCard = document.querySelector('.question-card');
+    const oldNav = document.querySelector('.test-nav');
+    const { card: newCard, nav: newNav } = buildCard(newIdx);
+    const answeredCount = state.answers.filter(a => a > 0).length;
+
+    const exitX = dir === 'forward' ? -60 : 60;
+    const enterX = dir === 'forward' ? 60 : -60;
+
+    // Set new card invisible initially
+    newCard.style.opacity = '0';
+
+    if (oldCard) {
+      // Insert new card after old card
+      oldCard.parentNode.insertBefore(newCard, oldCard.nextSibling);
+      // Replace nav
+      if (oldNav) oldNav.replaceWith(newNav);
+
+      // Animate old card out
+      animate(oldCard,
+        { opacity: [1, 0], x: [0, exitX] },
+        { duration: 0.2, easing: [0.4, 0, 1, 1] }
+      ).then(() => {
+        oldCard.remove();
+        updateProgress(answeredCount, newIdx);
+        // Animate new card in
+        animate(newCard,
+          { opacity: [0, 1], x: [enterX, 0] },
+          { duration: 0.3, easing: [0, 0, 0.2, 1] }
+        ).then(() => { transitioning = false; focusFirstChoice(); });
+      });
+    } else {
+      transitioning = false;
+    }
+  }
+
+  function handleAnswer(btn, choicesEl, i, score) {
+    if (advanceTimer) clearTimeout(advanceTimer);
+    if (transitioning) return;
+    state.answers[i] = score;
+    localStorage.setItem('b5-progress', JSON.stringify(state.answers));
+    // Show selection immediately
+    choicesEl.querySelectorAll('.choice').forEach(c => {
+      c.classList.remove('selected');
+      c.setAttribute('aria-pressed', 'false');
+    });
+    btn.classList.add('selected');
+    btn.setAttribute('aria-pressed', 'true');
+    // Auto-advance after brief pause
+    if (i < total - 1) {
+      advanceTimer = setTimeout(() => transitionTo(i + 1, 'forward'), 300);
+    } else {
+      // Last question — rebuild nav to show "See Results"
+      advanceTimer = setTimeout(() => {
+        const oldNav = document.querySelector('.test-nav');
+        const { nav: newNav } = buildCard(i);
+        if (oldNav) oldNav.replaceWith(newNav);
+        updateProgress(state.answers.filter(a => a > 0).length, i);
+      }, 300);
+    }
+  }
+
+  // Keyboard navigation for the test
+  function handleTestKeys(e) {
+    if (transitioning) return;
+    const choices = document.querySelectorAll('.question-card .choice');
+    if (!choices.length) return;
+
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const arr = Array.from(choices);
+      const cur = arr.indexOf(document.activeElement);
+      let next;
+      if (e.key === 'ArrowDown') {
+        next = cur < arr.length - 1 ? cur + 1 : 0;
+      } else {
+        next = cur > 0 ? cur - 1 : arr.length - 1;
+      }
+      arr[next].focus();
+    } else if (e.key === 'ArrowLeft') {
+      const backBtn = document.querySelector('.test-nav .btn--outline');
+      if (backBtn) { e.preventDefault(); backBtn.click(); }
+    } else if (e.key === 'ArrowRight') {
+      const navBtns = document.querySelectorAll('.test-nav .btn, .test-nav .btn--sm');
+      const fwd = Array.from(navBtns).find(b => !b.classList.contains('btn--outline'));
+      if (fwd) { e.preventDefault(); fwd.click(); }
+    }
+  }
+
+  // Focus first choice after card enters
+  function focusFirstChoice() {
+    const first = document.querySelector('.question-card .choice');
+    if (first) first.focus();
+  }
+
+  // Build the initial card + nav using the shared builder
+  const { card, nav } = buildCard(idx);
+
+  const container = h('div', { className: 'test-container' }, progress, card, nav);
+  container.addEventListener('keydown', handleTestKeys);
+  requestAnimationFrame(focusFirstChoice);
+  return container;
 }
 
 function renderResults() {
@@ -619,9 +742,18 @@ function renderResults() {
   // Sort by OCEAN order
   results.sort((a, b) => DOMAIN_ORDER.indexOf(a.domain) - DOMAIN_ORDER.indexOf(b.domain));
 
+  // Pull disclaimer and opening from override data, falling back to English
+  const overrideData = resultOverrides[lang] || resultOverrides['en'];
+  const opening = overrideData.opening || resultOverrides['en'].opening;
+  const disclaimerParagraphs = overrideData.disclaimer || resultOverrides['en'].disclaimer;
+
+  const disclaimerEl = h('div', { className: 'results-disclaimer' });
+  disclaimerParagraphs.forEach(text => disclaimerEl.appendChild(h('p', {}, text)));
+
   const header = h('div', { className: 'results-header' },
-    h('h2', {}, 'Your Results'),
-    h('p', {}, 'Click any trait to expand details and facet scores.')
+    h('h2', {}, opening),
+    h('p', {}, 'Click any trait to expand details and facet scores.'),
+    disclaimerEl
   );
 
   const cards = h('div', {});
@@ -1199,10 +1331,31 @@ function render() {
   app.appendChild(renderFooter());
   window.scrollTo(0, 0);
   main.focus({ preventScroll: true });
+
+  // Brief fade-in for page content
+  animate(main, { opacity: [0, 1] }, { duration: 0.25, easing: 'ease-out' });
 }
 
 window.addEventListener('hashchange', render);
 render();
+
+// Dev-only: Ctrl+Shift+D fills random answers and jumps to results
+if (import.meta.env.DEV) {
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
+      e.preventDefault();
+      const qs = allQuestions[state.lang] || allQuestions['en'];
+      state.answers = qs.map(() => Math.ceil(Math.random() * 5));
+      const scores = calculateScores(state.answers, qs);
+      const facetScores = extractFacetScores(scores);
+      localStorage.setItem('b5-results', JSON.stringify({
+        answers: state.answers, facetScores, lang: state.lang
+      }));
+      localStorage.removeItem('b5-progress');
+      navigate(encodeFacetScores(facetScores, state.lang));
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Stored data prompt — ask the user whether to keep or clear saved data
@@ -1242,6 +1395,7 @@ render();
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
   trapFocus(overlay, close);
+  animate(modal, { opacity: [0, 1], scale: [0.95, 1] }, { duration: 0.2, easing: [0, 0, 0.2, 1] });
 })();
 
 // ---------------------------------------------------------------------------
