@@ -1,0 +1,40 @@
+export default [
+  {
+    ignores: ['dist/**', 'src/vendor/**'],
+  },
+  {
+    files: ['src/**/*.js', 'scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        navigator: 'readonly',
+        localStorage: 'readonly',
+        location: 'readonly',
+        setTimeout: 'readonly',
+        URL: 'readonly',
+        Blob: 'readonly',
+        HTMLCanvasElement: 'readonly',
+        caches: 'readonly',
+        atob: 'readonly',
+        btoa: 'readonly',
+        self: 'readonly',
+        fetch: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      'no-const-assign': 'error',
+      'no-dupe-keys': 'error',
+      'no-duplicate-case': 'error',
+      'no-unreachable': 'error',
+      'eqeqeq': ['error', 'always'],
+      'no-debugger': 'error',
+    },
+  },
+];

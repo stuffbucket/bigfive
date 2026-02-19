@@ -1,0 +1,9 @@
+{
+  "name": "Big Five Personality Test",
+  "short_name": "Big Five",
+  "description": "Free, offline Big Five personality test. No tracking.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "bigfive-offline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fully offline Big Five personality test — zero server connections, zero tracking",
+  "type": "module",
+  "scripts": {
+    "extract": "node scripts/extract-data.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "clean": "rm -rf dist",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "test": "npm run build && node scripts/smoke-test.mjs",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "ci": "npm run lint && npm run build && npm run test:smoke"
+  },
+  "devDependencies": {
+    "eslint": "^10.0.0",
+    "vite": "^6.4.1"
+  }
+}
