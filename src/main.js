@@ -434,6 +434,34 @@ function renderHome() {
 }
 
 function renderTest() {
+  // On first visit to the test page per session, ask about shared computers
+  if (!sessionStorage.getItem('b5-shared-check')) {
+    sessionStorage.setItem('b5-shared-check', '1');
+    const overlay = h('div', { className: 'data-modal-overlay' });
+    const modal = h('div', { className: 'data-modal' },
+      h('h3', {}, 'Before you start'),
+      h('p', {}, 'Are you using a public computer or a shared browser profile?'),
+      h('div', { className: 'data-modal-buttons' },
+        h('button', {
+          className: 'btn btn--sm',
+          onClick: () => {
+            overlay.remove();
+            navigate('#/privacy');
+          }
+        }, 'Yes'),
+        h('button', {
+          className: 'btn btn--outline btn--sm',
+          onClick: () => overlay.remove()
+        }, 'No')
+      ),
+      h('p', { style: { marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-dim)' } },
+        'This test stores answers in your browser. On a shared device, anyone with access to this browser could see your results. You can delete all stored data from the Privacy page when you\'re done.'
+      )
+    );
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  }
+
   const questions = allQuestions[state.lang] || allQuestions['en'];
   if (!state.answers) {
     state.answers = new Array(questions.length).fill(0);
@@ -1112,6 +1140,44 @@ function render() {
 
 window.addEventListener('hashchange', render);
 render();
+
+// ---------------------------------------------------------------------------
+// Stored data prompt — ask the user whether to keep or clear saved data
+// ---------------------------------------------------------------------------
+(function checkStoredData() {
+  const hasProgress = !!localStorage.getItem('b5-progress');
+  const hasResults  = !!localStorage.getItem('b5-results');
+  if (!hasProgress && !hasResults) return;
+
+  const what = hasProgress && hasResults
+    ? 'in-progress answers and previous results'
+    : hasProgress ? 'in-progress answers' : 'previous results';
+
+  const overlay = h('div', { className: 'data-modal-overlay' });
+  const modal = h('div', { className: 'data-modal' },
+    h('h3', {}, 'Saved data found'),
+    h('p', {}, `This app has ${what} stored in your browser from a previous visit. Would you like to keep that data or clear it?`),
+    h('div', { className: 'data-modal-buttons' },
+      h('button', {
+        className: 'btn btn--outline btn--sm',
+        onClick: () => overlay.remove()
+      }, 'Keep'),
+      h('button', {
+        className: 'btn btn--sm',
+        onClick: () => {
+          localStorage.removeItem('b5-progress');
+          localStorage.removeItem('b5-results');
+          state.answers = null;
+          state.currentQuestion = 0;
+          overlay.remove();
+          render();
+        }
+      }, 'Clear')
+    )
+  );
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+})();
 
 // ---------------------------------------------------------------------------
 // Offline indicator
